@@ -1,0 +1,7 @@
+Django
+djangorestframework
+langchain_aws
+PyPDFLoader
+recursive_character_text_splitter
+vectorstore_index_creator
+faiss
