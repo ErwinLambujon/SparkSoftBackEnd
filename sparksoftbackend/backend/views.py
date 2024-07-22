@@ -85,7 +85,6 @@ def hr_rag_response(indexes_with_filenames, question):
 
 @api_view(['POST'])
 def upload_files(request):
-    print("upload_files view called")
     logger.info(f"Received upload request. Files: {[f.name for f in request.FILES.getlist('files')]}")
     try:
         files = request.FILES.getlist('files')
@@ -93,15 +92,15 @@ def upload_files(request):
             logger.warning("No files provided in the request")
             return Response({'error': 'No files provided'}, status=status.HTTP_400_BAD_REQUEST)
 
-        for file in files:
-            logger.info(f"Processing file: {file.name}, size: {file.size} bytes")
-            # Your file processing logic here
+        indexes_with_filenames = hr_index(files)
+        logger.info(f"Indexes created: {indexes_with_filenames}")
 
         return Response({'message': 'Files processed successfully'}, status=status.HTTP_200_OK)
     except Exception as e:
         logger.error(f"Error in upload_files: {str(e)}", exc_info=True)
         return Response({'error': f'An error occurred while processing the files: {str(e)}'},
                         status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
 
 
 @api_view(['POST'])
@@ -121,6 +120,6 @@ def ask_ai(request):
         logger.info(f"Generated responses: {responses}")
         return Response({'responses': responses})
     except Exception as e:
-        logger.error(f"Error in ask_ai: {e}")
-        return Response({'error': f'An error occurred while processing the request: {str(e)}'},
-                        status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        logger.error(f"Error in ask_ai: {e}", exc_info=True)
+        return Response({'error': 'An error occurred while processing the request'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
