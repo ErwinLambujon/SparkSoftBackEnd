@@ -2,18 +2,17 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
 import os
+from langchain.chains import LLMChain
+from langchain.prompts import PromptTemplate
+from langchain_community.document_loaders import PyPDFLoader
+import tempfile
 import logging
 from django.core.files.storage import default_storage
-from django.conf import settings
-
+from langchain.chains import RetrievalQA
 from langchain_aws import BedrockLLM
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.embeddings import BedrockEmbeddings
 from langchain_community.vectorstores import FAISS
-from langchain.schema import Document  # Add this line
-
-from PyPDF2 import PdfReader
-import io
 
 logger = logging.getLogger(__name__)
 
@@ -41,31 +40,35 @@ def hr_index(pdf_files):
         if pdf_file.name.lower().endswith(".pdf"):
             try:
                 logger.info(f"Processing {pdf_file.name}...")
-                file_content = pdf_file.read()
-                pdf_reader = PdfReader(io.BytesIO(file_content))
 
-                text_content = ""
-                for page in pdf_reader.pages:
-                    text_content += page.extract_text()
+                # Create a temporary file
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_file:
+                    temp_file.write(pdf_file.read())
+                    temp_file_path = temp_file.name
 
-                if not text_content.strip():
-                    logger.warning(f"No text content extracted from {pdf_file.name}")
-                    continue
+                # Use PyPDFLoader with the temporary file
+                data_load = PyPDFLoader(temp_file_path)
+                documents = data_load.load()
 
-                data_split = RecursiveCharacterTextSplitter(separators=["\n\n", "\n", " ", ""], chunk_size=300,
-                                                            chunk_overlap=10)
-                chunks = data_split.split_text(text_content)
+                # Split the documents
+                text_splitter = RecursiveCharacterTextSplitter(separators=["\n\n", "\n", " ", ""], chunk_size=300,
+                                                               chunk_overlap=10)
+                splits = text_splitter.split_documents(documents)
 
-                documents = [Document(page_content=chunk, metadata={"source": pdf_file.name}) for chunk in chunks]
+                # Create embeddings and vector store
+                embeddings = BedrockEmbeddings(credentials_profile_name='default',
+                                               model_id='amazon.titan-embed-text-v2:0')
+                vectorstore = FAISS.from_documents(splits, embeddings)
 
-                data_embeddings = BedrockEmbeddings(credentials_profile_name='default',
-                                                    model_id='amazon.titan-embed-text-v2:0')
-                vectorstore = FAISS.from_documents(documents, data_embeddings)
-
+                # Save the file and add to indexes
                 file_path = default_storage.save(pdf_file.name, pdf_file)
                 new_indexes.append((vectorstore, file_path))
 
                 logger.info(f"Processed successfully {pdf_file.name}")
+
+                # Clean up the temporary file
+                os.unlink(temp_file_path)
+
             except Exception as e:
                 logger.error(f"Error processing {pdf_file.name}: {str(e)}", exc_info=True)
         else:
@@ -76,40 +79,58 @@ def hr_index(pdf_files):
         return []
 
     indexes_with_filenames.extend(new_indexes)
-    logger.info(f"Total indexes with filenames: {indexes_with_filenames}")
+    logger.info(f"Total indexes with filenames: {len(indexes_with_filenames)}")
     return new_indexes
 
 
 def hr_rag_response(indexes_with_filenames, question):
     rag_llm = hr_llm()
-    responses = []
+    all_results = []
+
     for vectorstore, file_path in indexes_with_filenames:
         try:
             retriever = vectorstore.as_retriever()
-            docs = retriever.get_relevant_documents(question)
-            context = "\n".join([doc.page_content for doc in docs])
-
-            prompt = f"""
-            Context: {context}
-
-            Question: {question}
-
-            Please answer the question based on the given context. If the answer cannot be found in the context, please say so.
-            """
-
-            response = rag_llm(prompt)
+            qa_chain = RetrievalQA.from_chain_type(
+                llm=rag_llm,
+                chain_type="stuff",
+                retriever=retriever,
+                return_source_documents=True
+            )
+            result = qa_chain({"query": question})
             file_name = os.path.basename(file_path)
-            responses.append((response, file_name))
+            all_results.append((result['result'], file_name))
         except Exception as e:
-            logger.error(f"Error querying index for file {file_path}: {e}")
+            logger.error(f"Error querying index for file {file_path}: {e}", exc_info=True)
             file_name = os.path.basename(file_path)
-            responses.append((None, file_name))
-    return responses
+            all_results.append((None, file_name))
+
+    # Combine all results
+    combined_context = "\n\n".join([f"From {file_name}:\n{result}" for result, file_name in all_results if result])
+
+    # Create a new prompt for the final answer
+    prompt_engineering = """
+    Based on the following information from multiple documents:
+
+    {context}
+
+    Please provide a comprehensive answer to the question: {question}
+    If the information is not available or if there are contradictions, please mention that.
+    """
+
+    prompt = PromptTemplate(template=prompt_engineering, input_variables=["context", "question"])
+
+    # Create a new chain for the final answer
+    final_chain = LLMChain(llm=rag_llm, prompt=prompt)
+
+    # Generate the final answer
+    final_answer = final_chain.run(context=combined_context, question=question)
+
+    return [("Combined answer from all documents:\n\n" + final_answer, "All Documents")]
 
 @api_view(['POST'])
 def upload_files(request):
     global indexes_with_filenames
-    logger.info(f"Received upload request. Files: {[f.name for f in request.FILES.getlist('files')]}")
+    logger.info(f"Received upload request. Files: {request.FILES}")
     try:
         files = request.FILES.getlist('files')
         if not files:
@@ -118,12 +139,6 @@ def upload_files(request):
 
         new_indexes = hr_index(files)
         logger.info(f"New indexes created: {new_indexes}")
-
-        if not new_indexes:
-            return Response({
-                'message': 'No files were successfully processed',
-                'processed_files': []
-            }, status=status.HTTP_200_OK)
 
         return Response({
             'message': 'Files processed successfully',
