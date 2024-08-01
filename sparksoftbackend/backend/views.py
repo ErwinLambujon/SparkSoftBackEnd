@@ -83,7 +83,7 @@ def hr_index(pdf_files):
     return new_indexes
 
 
-def hr_rag_response(indexes_with_filenames, question):
+def hr_rag_response(indexes_with_filenames, question, context):
     rag_llm = hr_llm()
     all_results = []
 
@@ -107,23 +107,30 @@ def hr_rag_response(indexes_with_filenames, question):
     # Combine all results
     combined_context = "\n\n".join([f"From {file_name}:\n{result}" for result, file_name in all_results if result])
 
+    # Append the previous conversation context
+    conversation_context = "\n\n".join([f"User: {entry['user']}\nAI: {entry.get('ai', '')}" for entry in context])
+
     # Create a new prompt for the final answer
     prompt_engineering = """
     Based on the following information from multiple documents:
 
     {context}
 
+    And the previous conversation context:
+
+    {conversation_context}
+
     Please provide a comprehensive answer to the question: {question}
     If the information is not available or if there are contradictions, please mention that.
     """
 
-    prompt = PromptTemplate(template=prompt_engineering, input_variables=["context", "question"])
+    prompt = PromptTemplate(template=prompt_engineering, input_variables=["context", "conversation_context", "question"])
 
     # Create a new chain for the final answer
     final_chain = LLMChain(llm=rag_llm, prompt=prompt)
 
     # Generate the final answer
-    final_answer = final_chain.run(context=combined_context, question=question)
+    final_answer = final_chain.run(context=combined_context, conversation_context=conversation_context, question=question)
 
     return [("Combined answer from all documents:\n\n" + final_answer, "All Documents")]
 
@@ -156,6 +163,7 @@ def ask_ai(request):
     logger.info(f"Current indexes_with_filenames: {indexes_with_filenames}")
     try:
         question = request.data.get('question')
+        context = request.data.get('context', [])
         if not question:
             logger.warning("No question provided in the request")
             return Response({'error': 'No question provided'}, status=status.HTTP_400_BAD_REQUEST)
@@ -164,7 +172,7 @@ def ask_ai(request):
             logger.warning("No documents have been processed yet")
             return Response({'error': 'No documents have been processed yet'}, status=status.HTTP_400_BAD_REQUEST)
 
-        responses = hr_rag_response(indexes_with_filenames, question)
+        responses = hr_rag_response(indexes_with_filenames, question, context)
         logger.info(f"Generated responses: {responses}")
         return Response({'responses': responses})
     except Exception as e:
