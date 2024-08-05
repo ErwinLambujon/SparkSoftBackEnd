@@ -5,3 +5,7 @@ PyPDFLoader
 recursive_character_text_splitter
 vectorstore_index_creator
 faiss
+python-dotenv
+django-cors-headers
+langchain_community
+langchain

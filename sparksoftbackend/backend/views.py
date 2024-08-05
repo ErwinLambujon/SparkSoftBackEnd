@@ -122,6 +122,9 @@ def hr_rag_response(indexes_with_filenames, question, context):
 
     Please provide a comprehensive answer to the question: {question}
     If the information is not available or if there are contradictions, please mention that.
+    Be direct to the point do not add any sugarcoated introduction in your response.
+    Do not include response like "Based on the information provided" or something related to 
+    it just be specific to what is asked.
     """
 
     prompt = PromptTemplate(template=prompt_engineering, input_variables=["context", "conversation_context", "question"])
@@ -132,7 +135,7 @@ def hr_rag_response(indexes_with_filenames, question, context):
     # Generate the final answer
     final_answer = final_chain.run(context=combined_context, conversation_context=conversation_context, question=question)
 
-    return [("Combined answer from all documents:\n\n" + final_answer, "All Documents")]
+    return [("" + final_answer, "")]
 
 @api_view(['POST'])
 def upload_files(request):
