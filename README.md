@@ -2,7 +2,7 @@
 ### `pip install requirements.txt`
 
 # Change directory before running the project
-### `cd sparksoftbackend`
+### `cd backend`
 
 # Run the project
 ### `py manage.py runserver`
