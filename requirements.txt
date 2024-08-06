@@ -9,3 +9,9 @@ python-dotenv
 django-cors-headers
 langchain_community
 langchain
+asgiref
+aiofiles
+langchain
+pypdf
+faiss-cpu
+boto3
