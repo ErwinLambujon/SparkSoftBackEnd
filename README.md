@@ -1,4 +1,4 @@
-# install requirents.txt
+# install requirements.txt
 ### `pip install requirements.txt`
 
 # Change directory before running the project
