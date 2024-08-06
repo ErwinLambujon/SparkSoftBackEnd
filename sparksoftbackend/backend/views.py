@@ -1,3 +1,7 @@
+import asyncio
+import aiofiles
+import aiofiles.tempfile
+from asgiref.sync import async_to_sync
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
@@ -31,48 +35,48 @@ def hr_llm():
     )
     return llm
 
+async def process_pdf_file_async(pdf_file):
+    if pdf_file.name.lower().endswith(".pdf"):
+        try:
+            logger.info(f"Processing {pdf_file.name}...")
 
-def hr_index(pdf_files):
+            temp_file_path = None
+            async with aiofiles.tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_file:
+                await temp_file.write(pdf_file.read())
+                temp_file_path = temp_file.name
+
+            data_load = PyPDFLoader(temp_file_path)
+            documents = data_load.load()
+
+            text_splitter = RecursiveCharacterTextSplitter(separators=["\n\n", "\n", " ", ""], chunk_size=300, chunk_overlap=10)
+            splits = text_splitter.split_documents(documents)
+
+            # Create embeddings and vector store
+            embeddings = BedrockEmbeddings(credentials_profile_name='default', model_id='amazon.titan-embed-text-v2:0')
+            vectorstore = FAISS.from_documents(splits, embeddings)
+
+            async with aiofiles.open(pdf_file.name, 'wb') as out_file:
+                await out_file.write(pdf_file.read())
+
+            logger.info(f"Processed successfully {pdf_file.name}")
+
+            os.unlink(temp_file_path)
+
+            return (vectorstore, pdf_file.name)
+        except Exception as e:
+            logger.error(f"Error processing {pdf_file.name}: {str(e)}", exc_info=True)
+    else:
+        logger.warning(f"File {pdf_file.name} is not a PDF. Skipping this file.")
+    return None
+
+async def hr_index_async(pdf_files):
     global indexes_with_filenames
     new_indexes = []
 
     for pdf_file in pdf_files:
-        if pdf_file.name.lower().endswith(".pdf"):
-            try:
-                logger.info(f"Processing {pdf_file.name}...")
-
-                # Create a temporary file
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_file:
-                    temp_file.write(pdf_file.read())
-                    temp_file_path = temp_file.name
-
-                # Use PyPDFLoader with the temporary file
-                data_load = PyPDFLoader(temp_file_path)
-                documents = data_load.load()
-
-                # Split the documents
-                text_splitter = RecursiveCharacterTextSplitter(separators=["\n\n", "\n", " ", ""], chunk_size=300,
-                                                               chunk_overlap=10)
-                splits = text_splitter.split_documents(documents)
-
-                # Create embeddings and vector store
-                embeddings = BedrockEmbeddings(credentials_profile_name='default',
-                                               model_id='amazon.titan-embed-text-v2:0')
-                vectorstore = FAISS.from_documents(splits, embeddings)
-
-                # Save the file and add to indexes
-                file_path = default_storage.save(pdf_file.name, pdf_file)
-                new_indexes.append((vectorstore, file_path))
-
-                logger.info(f"Processed successfully {pdf_file.name}")
-
-                # Clean up the temporary file
-                os.unlink(temp_file_path)
-
-            except Exception as e:
-                logger.error(f"Error processing {pdf_file.name}: {str(e)}", exc_info=True)
-        else:
-            logger.warning(f"File {pdf_file.name} is not a PDF. Skipping this file.")
+        result = await process_pdf_file_async(pdf_file)
+        if result:
+            new_indexes.append(result)
 
     if not new_indexes:
         logger.warning("No documents were successfully loaded and processed.")
@@ -81,7 +85,6 @@ def hr_index(pdf_files):
     indexes_with_filenames.extend(new_indexes)
     logger.info(f"Total indexes with filenames: {len(indexes_with_filenames)}")
     return new_indexes
-
 
 def hr_rag_response(indexes_with_filenames, question, context):
     rag_llm = hr_llm()
@@ -147,7 +150,8 @@ def upload_files(request):
             logger.warning("No files provided in the request")
             return Response({'error': 'No files provided'}, status=status.HTTP_400_BAD_REQUEST)
 
-        new_indexes = hr_index(files)
+        # Use async_to_sync to run the async function
+        new_indexes = async_to_sync(hr_index_async)(files)
         logger.info(f"New indexes created: {new_indexes}")
 
         return Response({
@@ -156,8 +160,7 @@ def upload_files(request):
         }, status=status.HTTP_200_OK)
     except Exception as e:
         logger.error(f"Error in upload_files: {str(e)}", exc_info=True)
-        return Response({'error': f'An error occurred while processing the files: {str(e)}'},
-                        status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return Response({'error': f'An error occurred while processing the files: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 @api_view(['POST'])
 def ask_ai(request):
